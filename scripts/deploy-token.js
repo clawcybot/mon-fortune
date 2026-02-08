@@ -1,112 +1,168 @@
-#!/usr/bin/env node
-/**
- * FORTUNE Token Deployment Script
- * Deploys FORTUNE token on nad.fun bonding curve
- * 
- * Usage:
- *   node scripts/deploy-token.js [testnet|mainnet] [initial-buy-amount]
- * 
- * Example:
- *   node scripts/deploy-token.js testnet 0.01
- */
-
-require('dotenv').config();
 const { ethers } = require('ethers');
-const { FortuneTokenManager } = require('../lib/token-manager');
+const fs = require('fs');
+const path = require('path');
 
-async function deploy() {
-  const network = process.argv[2] || 'testnet';
-  const initialBuy = process.argv[3] || '0.01';
+// Testnet config
+const CONFIG = {
+  apiUrl: 'https://dev-api.nad.fun',
+  rpcUrl: 'https://testnet-rpc.monad.xyz',
+  CURVE: '0x1228b0dc9481C11D3071E7A924B794CfB038994e',
+  BONDING_CURVE_ROUTER: '0x865054F0F6A288adaAc30261731361EA7E908003',
+  LENS: '0xB056d79CA5257589692699a46623F901a3BB76f1'
+};
 
-  if (!['testnet', 'mainnet'].includes(network)) {
-    console.error('❌ Invalid network. Use: testnet or mainnet');
-    process.exit(1);
+// BondingCurveRouter ABI (minimal)
+const BONDING_CURVE_ROUTER_ABI = [
+  {
+    "inputs": [{"components": [{"internalType": "string", "name": "name", "type": "string"}, {"internalType": "string", "name": "symbol", "type": "string"}, {"internalType": "string", "name": "tokenURI", "type": "string"}, {"internalType": "uint256", "name": "amountOut", "type": "uint256"}, {"internalType": "bytes32", "name": "salt", "type": "bytes32"}, {"internalType": "uint256", "name": "actionId", "type": "uint256"}], "internalType": "struct IBondingCurveRouter.CreateParams", "name": "params", "type": "tuple"}],
+    "name": "create",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
   }
+];
 
-  console.log(`🔮 MON Fortune Token Deployment`);
-  console.log(`================================`);
-  console.log(`Network: ${network}`);
-  console.log(`Initial Buy: ${initialBuy} MON`);
-  console.log('');
+const CURVE_ABI = [
+  "function feeConfig() view returns (uint256, uint256, uint256, uint256, uint256)",
+  "event CurveCreate(address indexed token, address indexed pool, address indexed creator)"
+];
 
-  // Check environment
-  if (!process.env.ORACLE_PRIVATE_KEY) {
-    console.error('❌ ORACLE_PRIVATE_KEY not set in .env');
-    process.exit(1);
+async function main() {
+  // Load wallet
+  const privateKey = process.env.ORACLE_PRIVATE_KEY;
+  const provider = new ethers.JsonRpcProvider(CONFIG.rpcUrl);
+  const wallet = new ethers.Wallet(privateKey, provider);
+  
+  console.log('Deploying FORTUNE token...');
+  console.log('Creator:', wallet.address);
+  
+  // Step 1: Create a simple SVG image for the token
+  const svgImage = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+    <rect width="100" height="100" fill="#6B46C1"/>
+    <text x="50" y="55" font-size="40" text-anchor="middle" fill="white">🔮</text>
+  </svg>`;
+  const imageBuffer = Buffer.from(svgImage);
+  
+  // Step 1: Upload image
+  console.log('Uploading image...');
+  const imageResponse = await fetch(`${CONFIG.apiUrl}/agent/token/image`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/svg+xml' },
+    body: imageBuffer
+  });
+  
+  if (!imageResponse.ok) {
+    throw new Error(`Image upload failed: ${imageResponse.status}`);
   }
-
-  const rpcUrl = network === 'testnet' 
-    ? (process.env.TESTNET_RPC || 'https://testnet-rpc.monad.xyz')
-    : (process.env.MAINNET_RPC || 'https://rpc.monad.xyz');
-
-  try {
-    // Setup provider and wallet
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    const wallet = new ethers.Wallet(process.env.ORACLE_PRIVATE_KEY, provider);
-    
-    const balance = await provider.getBalance(wallet.address);
-    console.log(`Deployer: ${wallet.address}`);
-    console.log(`Balance: ${ethers.formatEther(balance)} MON`);
-    console.log('');
-
-    if (balance < ethers.parseEther(initialBuy)) {
-      console.error(`❌ Insufficient balance. Need ${initialBuy} MON`);
-      
-      if (network === 'testnet') {
-        console.log('');
-        console.log('💧 Get testnet MON from:');
-        console.log('   - https://faucet.monad.xyz');
-        console.log('   - Or use Agent Faucet: POST https://agents.devnads.com/v1/faucet');
+  
+  const { image_uri, is_nsfw } = await imageResponse.json();
+  console.log('Image URI:', image_uri);
+  console.log('NSFW:', is_nsfw);
+  
+  // Step 2: Upload metadata
+  console.log('Uploading metadata...');
+  const metadataResponse = await fetch(`${CONFIG.apiUrl}/agent/token/metadata`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      image_uri,
+      name: 'MON Fortune',
+      symbol: 'FORTUNE',
+      description: 'Fortune-telling token for the Monad ecosystem. Earn FORTUNE by consulting the oracle.',
+      website: 'https://github.com/clawcybot/mon-fortune'
+    })
+  });
+  
+  if (!metadataResponse.ok) {
+    throw new Error(`Metadata upload failed: ${metadataResponse.status}`);
+  }
+  
+  const { metadata_uri } = await metadataResponse.json();
+  console.log('Metadata URI:', metadata_uri);
+  
+  // Step 3: Mine salt
+  console.log('Mining salt...');
+  const saltResponse = await fetch(`${CONFIG.apiUrl}/agent/salt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      creator: wallet.address,
+      name: 'MON Fortune',
+      symbol: 'FORTUNE',
+      metadata_uri
+    })
+  });
+  
+  if (!saltResponse.ok) {
+    throw new Error(`Salt mining failed: ${saltResponse.status}`);
+  }
+  
+  const { salt, address: predictedAddress } = await saltResponse.json();
+  console.log('Salt:', salt);
+  console.log('Predicted address:', predictedAddress);
+  
+  // Step 4: Use known deploy fee (10 MON based on docs)
+  console.log('Using deploy fee: 10 MON');
+  const deployFeeAmount = ethers.parseEther('10');
+  
+  // Step 4: Create token on-chain
+  console.log('Creating token...');
+  const router = new ethers.Contract(CONFIG.BONDING_CURVE_ROUTER, BONDING_CURVE_ROUTER_ABI, wallet);
+  
+  const createParams = {
+    name: 'MON Fortune',
+    symbol: 'FORTUNE',
+    tokenURI: metadata_uri,
+    amountOut: 0, // No initial buy
+    salt: salt,
+    actionId: 1
+  };
+  
+  const tx = await router.create(createParams, {
+    value: deployFeeAmount
+  });
+  
+  console.log('Transaction sent:', tx.hash);
+  const receipt = await tx.wait();
+  console.log('Transaction confirmed!');
+  
+  // Parse event to get token address
+  let tokenAddress = null;
+  let poolAddress = null;
+  
+  for (const log of receipt.logs) {
+    try {
+      const iface = new ethers.Interface(CURVE_ABI);
+      const parsed = iface.parseLog({ topics: log.topics, data: log.data });
+      if (parsed && parsed.name === 'CurveCreate') {
+        tokenAddress = parsed.args.token;
+        poolAddress = parsed.args.pool;
+        break;
       }
-      
-      process.exit(1);
+    } catch (e) {
+      // Not the event we're looking for
     }
-
-    // Check if already deployed
-    const existingToken = process.env[`${network.toUpperCase()}_FORTUNE_TOKEN_ADDRESS`];
-    if (existingToken && existingToken !== '0x...') {
-      console.log(`⚠️  Token already deployed: ${existingToken}`);
-      console.log('   Set to 0x... in .env to redeploy');
-      console.log('');
-    }
-
-    // Confirm deployment
-    console.log('⚠️  This will deploy a new FORTUNE token on nad.fun');
-    console.log(`   Spending ${initialBuy} MON for initial liquidity`);
-    console.log('');
+  }
+  
+  if (tokenAddress) {
+    console.log('\n✅ Token deployed successfully!');
+    console.log('Token Address:', tokenAddress);
+    console.log('Pool Address:', poolAddress);
+    console.log('Explorer:', `https://testnet.monadexplorer.com/address/${tokenAddress}`);
     
-    // Deploy
-    const manager = new FortuneTokenManager(provider, wallet, network);
-    const result = await manager.deployToken(initialBuy);
-
-    console.log('');
-    console.log('✅ Deployment Successful!');
-    console.log('========================');
-    console.log(`Token Address: ${result.tokenAddress}`);
-    console.log(`Transaction: ${result.txHash}`);
-    console.log(`Explorer: ${manager.getExplorerUrl(result.txHash)}`);
-    console.log(`nad.fun: ${manager.getNadFunUrl()}`);
-    console.log('');
-    console.log('⚠️  IMPORTANT: Add this to your .env file:');
-    console.log(`${network.toUpperCase()}_FORTUNE_TOKEN_ADDRESS=${result.tokenAddress}`);
-    console.log('');
-    console.log('📝 For Hackathon Submission:');
-    console.log(`   Token Address (${network}): ${result.tokenAddress}`);
-    console.log(`   Deployer: ${wallet.address}`);
-    console.log(`   Initial Buy: ${initialBuy} MON`);
-
-  } catch (error) {
-    console.error('');
-    console.error('❌ Deployment Failed:');
-    console.error(error.message);
-    
-    if (error.message.includes('insufficient funds')) {
-      console.log('');
-      console.log('💡 Need testnet MON? Visit https://faucet.monad.xyz');
-    }
-    
-    process.exit(1);
+    // Save to env file
+    const envPath = path.join(__dirname, '..', '.env');
+    let envContent = fs.readFileSync(envPath, 'utf8');
+    envContent = envContent.replace(
+      'FORTUNE_TOKEN_ADDRESS_TESTNET=',
+      `FORTUNE_TOKEN_ADDRESS_TESTNET=${tokenAddress}`
+    );
+    fs.writeFileSync(envPath, envContent);
+    console.log('\nToken address saved to .env file');
+  } else {
+    console.log('Could not parse token address from logs');
+    console.log('Receipt logs:', receipt.logs);
   }
 }
 
-deploy();
+main().catch(console.error);
