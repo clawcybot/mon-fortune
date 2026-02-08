@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  mon-fortune:
+    build: .
+    container_name: mon-fortune-oracle
+    ports:
+      - "3000:3000"
+    environment:
+      - ORACLE_PRIVATE_KEY=${ORACLE_PRIVATE_KEY}
+      - TESTNET_ORACLE_ADDRESS=${TESTNET_ORACLE_ADDRESS}
+      - MAINNET_ORACLE_ADDRESS=${MAINNET_ORACLE_ADDRESS}
+      - TESTNET_RPC=${TESTNET_RPC:-https://testnet-rpc.monad.xyz}
+      - MAINNET_RPC=${MAINNET_RPC:-https://rpc.monad.xyz}
+      - MIN_MON_AMOUNT=${MIN_MON_AMOUNT:-1000000000000000}
+      - MAX_RETURN=${MAX_RETURN:-10000000000000000000}
+      - PORT=3000
+      - RATE_LIMIT_MAX=100
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Redis for production (persists processed txs)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: mon-fortune-redis
+  #   restart: unless-stopped
+  #   volumes:
+  #     - redis-data:/data
+
+# volumes:
+#   redis-data:
