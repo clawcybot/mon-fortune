@@ -51,14 +51,15 @@ Object.keys(NETWORKS).forEach(network => {
   }
 });
 
-// Fortune messages
-const fortunes = {
-  excellent: ["The Monad smiles upon you! 🌟", "Destiny calls your name! ✨", "Legendary luck! 💎"],
-  good: ["Fortune favors the brave! 🍀", "Good omens gather! 🌈", "Success is within reach! 🎯"],
-  neutral: ["The future is unwritten... 📖", "Balance in all things. ⚖️", "Trust yourself. 🧘"],
-  poor: ["Dark clouds gather... ⛈️", "Tread carefully. 🐢", "Wait for better times. 🌑"],
-  bad: ["The void stares back... 🕳️", "Turn back while you can! ⚠️", "Not today. 🚫"]
-};
+// 🏮 CáiShén (God of Wealth) Fortune Outcomes
+const OUTCOMES = [
+  { name: "🥟 IOU Dumplings", tier: 1, minMult: 0.1, maxMult: 0.5, probability: 0.40 },
+  { name: "🔄 Luck Recycled", tier: 2, minMult: 0.5, maxMult: 0.8, probability: 0.30 },
+  { name: "💰 Small Win", tier: 3, minMult: 0.8, maxMult: 1.2, probability: 0.15 },
+  { name: "🐷 Golden Pig", tier: 4, minMult: 1.2, maxMult: 2.0, probability: 0.10 },
+  { name: "🐴 Horse Year LFG", tier: 5, minMult: 2.0, maxMult: 3.0, probability: 0.04 },
+  { name: "🎰 SUPER 888 JACKPOT", tier: 6, minMult: 3.0, maxMult: 8.88, probability: 0.01 }
+];
 
 // Health check - shows both networks
 app.get('/health', async (req, res) => {
@@ -101,11 +102,138 @@ async function detectNetwork(txhash) {
   return null;
 }
 
-// Main fortune endpoint - uses query param: ?network=testnet
+// 🏮 Check if amount contains lucky 8 (八 bā - prosperity)
+function containsEight(amountStr) {
+  return amountStr.includes('8');
+}
+
+// 💀 Check for death number 4 (四 sì - death)
+function hasMultipleFours(amountStr) {
+  const fours = (amountStr.match(/4/g) || []).length;
+  return fours >= 2;
+}
+
+// 📅 Check forbidden days (4th, 14th, 24th)
+function isForbiddenDay() {
+  const day = new Date().getDate();
+  return day === 4 || day === 14 || day === 24;
+}
+
+// 👻 Check ghost hour (4:44 AM/PM)
+function isGhostHour() {
+  const now = new Date();
+  const hour = now.getHours();
+  const minute = now.getMinutes();
+  return (hour === 4 || hour === 16) && minute === 44;
+}
+
+// 📆 Check Tuesday penalty
+function isTuesday() {
+  return new Date().getDay() === 2; // 0 = Sunday, 2 = Tuesday
+}
+
+// 🎲 Calculate CáiShén fortune with all superstitions
+function calculateCaichenFortune(amountWei, txhash, message) {
+  const amountMon = Number(amountWei) / 1e18;
+  const amountStr = amountMon.toString();
+  
+  // Check requirements
+  const hasEight = containsEight(amountStr);
+  const minOffering = amountMon >= 8;
+  
+  if (!minOffering) {
+    return {
+      outcome: { name: "⛔ Offering Too Small", tier: 0, minMult: 0, maxMult: 0 },
+      multiplier: 0,
+      message: "CáiShén requires a minimum offering of 8 $MON",
+      blessing: "恭喜發財 - Wishing you prosperity (try again with 8+ MON)"
+    };
+  }
+  
+  if (!hasEight) {
+    return {
+      outcome: { name: "⛔ Missing Lucky 8", tier: 0, minMult: 0, maxMult: 0 },
+      multiplier: 0,
+      message: "Your offering must contain the digit '8' to please CáiShén",
+      blessing: "八 (bā) sounds like 發 (fā) - prosperity requires 8!"
+    };
+  }
+  
+  // Calculate base luck from amount and message
+  const msgHash = crypto.createHash('sha256').update(txhash + message).digest('hex');
+  const entropy = parseInt(msgHash.substring(0, 8), 16) / 0xFFFFFFFF;
+  
+  // Apply superstition penalties
+  let penalty = 1.0;
+  let penaltiesApplied = [];
+  
+  if (hasMultipleFours(amountStr)) {
+    penalty *= 0.5;
+    penaltiesApplied.push("Death Numbers (multiple 4s)");
+  }
+  
+  if (isForbiddenDay()) {
+    penalty *= 0.5;
+    penaltiesApplied.push("Forbidden Day (4th/14th/24th)");
+  }
+  
+  if (isGhostHour()) {
+    penalty *= 0.5;
+    penaltiesApplied.push("Ghost Hour (4:44)");
+  }
+  
+  if (isTuesday()) {
+    penalty *= 0.5;
+    penaltiesApplied.push("Tuesday Penalty");
+  }
+  
+  // Calculate weighted outcome
+  const adjustedEntropy = entropy * penalty;
+  
+  // Select outcome based on probability
+  let selectedOutcome;
+  let cumulative = 0;
+  for (const outcome of OUTCOMES) {
+    cumulative += outcome.probability;
+    if (adjustedEntropy <= cumulative) {
+      selectedOutcome = outcome;
+      break;
+    }
+  }
+  if (!selectedOutcome) selectedOutcome = OUTCOMES[OUTCOMES.length - 1];
+  
+  // Calculate multiplier within the outcome's range
+  const range = selectedOutcome.maxMult - selectedOutcome.minMult;
+  const multEntropy = parseInt(msgHash.substring(8, 16), 16) / 0xFFFFFFFF;
+  const multiplier = selectedOutcome.minMult + (range * multEntropy);
+  
+  // Generate blessing message
+  const blessings = [
+    "恭喜發財 (Gōngxǐ fācái) - Wishing you prosperity!",
+    "紅包拿來 (Hóngbāo ná lái) - Hand over the red envelope!",
+    "財源滾滾 (Cái yuán gǔn gǔn) - May wealth flow in!",
+    "大吉大利 (Dàjí dàlì) - Great luck and prosperity!",
+    "年年有餘 (Nián nián yǒu yú) - Abundance year after year!"
+  ];
+  const blessing = blessings[Math.floor(entropy * blessings.length)];
+  
+  return {
+    outcome: selectedOutcome,
+    multiplier: multiplier,
+    penaltiesApplied: penaltiesApplied,
+    penaltyMultiplier: penalty,
+    blessing: blessing,
+    hasEight: hasEight,
+    minOffering: minOffering
+  };
+}
+
+// Main fortune endpoint - CáiShén God of Wealth
+// ?network=testnet for testnet, defaults to mainnet
 app.post('/fortune', async (req, res) => {
   try {
     const { txhash, message } = req.body;
-    const networkParam = req.query.network; // ?network=testnet or ?network=mainnet
+    const networkParam = req.query.network;
 
     if (!txhash || !message) {
       return res.status(400).json({ error: "Missing txhash or message" });
@@ -115,16 +243,26 @@ app.post('/fortune', async (req, res) => {
       return res.status(400).json({ error: "Invalid txhash" });
     }
 
-    // Determine network
+    // Determine network - DEFAULT TO MAINNET
     let network = networkParam;
-    if (!network || !NETWORKS[network]) {
-      network = await detectNetwork(txhash);
-      if (!network) {
-        return res.status(400).json({
-          error: "Transaction not found on any supported network",
-          hint: "Use ?network=testnet or ?network=mainnet"
-        });
+    if (!network) {
+      // Default to mainnet, only use detected network if mainnet not configured
+      if (providers['mainnet'] && NETWORKS['mainnet'].oracleAddress) {
+        network = 'mainnet';
+      } else {
+        // Fall back to detection if mainnet not available
+        network = await detectNetwork(txhash);
+        if (!network) {
+          return res.status(400).json({
+            error: "Transaction not found",
+            hint: "Use ?network=testnet for testnet"
+          });
+        }
       }
+    }
+    
+    if (!NETWORKS[network]) {
+      return res.status(400).json({ error: "Invalid network. Use 'testnet' or 'mainnet'" });
     }
 
     const config = NETWORKS[network];
@@ -149,27 +287,25 @@ app.post('/fortune', async (req, res) => {
     const tx = await provider.getTransaction(txhash);
     if (tx.to?.toLowerCase() !== config.oracleAddress.toLowerCase()) {
       return res.status(400).json({ 
-        error: "Not sent to oracle",
+        error: "Not sent to CáiShén oracle",
         expected: config.oracleAddress,
         received: tx.to
       });
     }
 
-    // Check minimum (0.001 MON)
-    const minAmount = BigInt('1000000000000000');
-    if (BigInt(tx.value.toString()) < minAmount) {
-      return res.status(400).json({ error: "Minimum 0.001 MON required" });
-    }
-
     processedTxs[network].add(txhash.toLowerCase());
 
-    // Calculate fortune
-    const luckScore = calculateLuckScore(tx.value.toString(), message);
-    const returnAmount = calculateReturn(BigInt(tx.value.toString()), luckScore);
-    const fortuneMessage = selectFortune(luckScore);
+    // 🏮 Calculate CáiShén fortune
+    const fortune = calculateCaichenFortune(tx.value.toString(), txhash, message);
+    
+    // Calculate return amount
+    const returnAmount = fortune.multiplier > 0 
+      ? (BigInt(tx.value.toString()) * BigInt(Math.floor(fortune.multiplier * 100))) / BigInt(100)
+      : BigInt(0);
 
     // Send MON back
     let returnTxHash = null;
+    let returnStatus = 'pending';
     try {
       if (returnAmount > 0) {
         const returnTx = await wallet.sendTransaction({
@@ -179,23 +315,43 @@ app.post('/fortune', async (req, res) => {
         });
         returnTxHash = returnTx.hash;
         await returnTx.wait();
+        returnStatus = 'confirmed';
+      } else {
+        returnStatus = 'no_return';
       }
     } catch (e) {
       console.error('Return failed:', e);
+      returnStatus = 'failed';
     }
 
     res.json({
-      success: true,
-      fortune: fortuneMessage,
-      luck_score: luckScore,
-      luck_tier: getLuckTier(luckScore),
-      network: network,
+      success: fortune.outcome.tier > 0,
+      caishen: {
+        outcome: fortune.outcome.name,
+        tier: fortune.outcome.tier,
+        blessing: fortune.blessing
+      },
+      offering: {
+        amount: ethers.formatEther(tx.value),
+        has_eight: fortune.hasEight,
+        min_offering_met: fortune.minOffering
+      },
+      multiplier: fortune.multiplier,
       mon_received: ethers.formatEther(tx.value),
       mon_sent: ethers.formatEther(returnAmount),
-      multiplier: Number(returnAmount) / Number(tx.value),
       txhash_return: returnTxHash,
+      return_status: returnStatus,
+      superstitions: {
+        penalties_applied: fortune.penaltiesApplied,
+        penalty_multiplier: fortune.penaltyMultiplier,
+        is_forbidden_day: isForbiddenDay(),
+        is_ghost_hour: isGhostHour(),
+        is_tuesday: isTuesday()
+      },
+      network: network,
       sender: tx.from,
-      explorer_url: `${config.explorer}/tx/${txhash}`
+      explorer_url: `${config.explorer}/tx/${txhash}`,
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
@@ -203,37 +359,6 @@ app.post('/fortune', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-function calculateLuckScore(amount, message) {
-  const amountInMon = Number(amount) / 1e18;
-  const amountFactor = Math.min(30, Math.floor(amountInMon * 10));
-  const msgHash = crypto.createHash('sha256').update(message).digest('hex');
-  const entropy = parseInt(msgHash.substring(0, 4), 16) % 21;
-  const daySeed = Math.floor(Date.now() / 86400000);
-  const mood = 20 + (daySeed % 21);
-  return Math.min(100, Math.max(0, amountFactor + entropy + mood));
-}
-
-function calculateReturn(amountIn, luckScore) {
-  const multipliers = [0, 0.5, 1, 1.5, 2, 3];
-  const tier = Math.floor(luckScore / 20);
-  const mult = multipliers[Math.min(tier, 5)];
-  return (amountIn * BigInt(Math.floor(mult * 100))) / BigInt(100);
-}
-
-function selectFortune(luckScore) {
-  const tier = getLuckTier(luckScore);
-  const pool = fortunes[tier];
-  return pool[Math.floor(Math.random() * pool.length)];
-}
-
-function getLuckTier(score) {
-  if (score <= 20) return 'bad';
-  if (score <= 40) return 'poor';
-  if (score <= 60) return 'neutral';
-  if (score <= 80) return 'good';
-  return 'excellent';
-}
 
 // Cleanup old processed txs periodically
 setInterval(() => {
@@ -247,11 +372,12 @@ setInterval(() => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🔮 Fortune Oracle running on port ${PORT}`);
+  console.log(`🏮 CáiShén (God of Wealth) Oracle running on port ${PORT}`);
   console.log('Networks configured:');
   Object.entries(NETWORKS).forEach(([name, config]) => {
     if (config.oracleAddress) {
       console.log(`  ${name}: ${config.oracleAddress}`);
     }
   });
+  console.log('Rules: Minimum 8 $MON, must contain "8", watch out for 4s!');
 });
