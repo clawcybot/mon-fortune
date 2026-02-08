@@ -82,18 +82,23 @@ mon-fortune/
 ```python
 import requests
 
-# Consult the oracle
-response = requests.post('http://localhost:3000/fortune', json={
+# Consult the oracle (testnet)
+response = requests.post('http://localhost:3000/fortune?network=testnet', json={
     'txhash': '0x...',
-    'message': 'Should I deploy today?',
-    'network': 'testnet'
+    'message': 'Should I deploy today?'
+})
+
+# Or use mainnet
+response = requests.post('http://localhost:3000/fortune?network=mainnet', json={
+    'txhash': '0x...',
+    'message': 'Should I deploy today?'
 })
 
 result = response.json()
 print(f"Fortune: {result['fortune']}")
 print(f"Luck Score: {result['luck_score']}")
 print(f"MON Returned: {result['mon_sent']}")
-print(f"FORTUNE Tokens: {result['token_reward']['amount']}")
+```
 ```
 
 ---

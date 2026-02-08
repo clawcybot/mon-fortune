@@ -16,20 +16,40 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Track processed transactions
-const processedTxs = new Set();
-
-// Network config
-const NETWORK = {
-  name: 'testnet',
-  rpcUrl: process.env.TESTNET_RPC || 'https://testnet-rpc.monad.xyz',
-  oracleAddress: process.env.TESTNET_ORACLE_ADDRESS,
-  explorer: 'https://testnet.monadexplorer.com'
+// Track processed transactions per network
+const processedTxs = {
+  testnet: new Set(),
+  mainnet: new Set()
 };
 
-// Initialize provider and wallet
-const provider = new ethers.JsonRpcProvider(NETWORK.rpcUrl);
-const wallet = new ethers.Wallet(process.env.ORACLE_PRIVATE_KEY, provider);
+// Network configurations
+const NETWORKS = {
+  testnet: {
+    name: 'testnet',
+    rpcUrl: process.env.TESTNET_RPC || 'https://testnet-rpc.monad.xyz',
+    oracleAddress: process.env.TESTNET_ORACLE_ADDRESS,
+    explorer: 'https://testnet.monadexplorer.com',
+    chainId: 10143
+  },
+  mainnet: {
+    name: 'mainnet',
+    rpcUrl: process.env.MAINNET_RPC || 'https://rpc.monad.xyz',
+    oracleAddress: process.env.MAINNET_ORACLE_ADDRESS,
+    explorer: 'https://monadexplorer.com',
+    chainId: 10144
+  }
+};
+
+// Initialize providers and wallets for configured networks
+const providers = {};
+const wallets = {};
+
+Object.keys(NETWORKS).forEach(network => {
+  if (NETWORKS[network].oracleAddress) {
+    providers[network] = new ethers.JsonRpcProvider(NETWORKS[network].rpcUrl);
+    wallets[network] = new ethers.Wallet(process.env.ORACLE_PRIVATE_KEY, providers[network]);
+  }
+});
 
 // Fortune messages
 const fortunes = {
@@ -40,20 +60,52 @@ const fortunes = {
   bad: ["The void stares back... 🕳️", "Turn back while you can! ⚠️", "Not today. 🚫"]
 };
 
-// Health check
+// Health check - shows both networks
 app.get('/health', async (req, res) => {
-  const balance = await provider.getBalance(NETWORK.oracleAddress);
-  res.json({
+  const status = {
     status: 'ok',
-    address: NETWORK.oracleAddress,
-    balance: ethers.formatEther(balance) + ' MON'
-  });
+    networks: {}
+  };
+
+  for (const [network, config] of Object.entries(NETWORKS)) {
+    if (providers[network]) {
+      try {
+        const balance = await providers[network].getBalance(config.oracleAddress);
+        status.networks[network] = {
+          address: config.oracleAddress,
+          balance: ethers.formatEther(balance) + ' MON',
+          rpc: config.rpcUrl,
+          explorer: config.explorer
+        };
+      } catch (e) {
+        status.networks[network] = { error: 'Connection failed' };
+      }
+    } else {
+      status.networks[network] = { status: 'not configured' };
+    }
+  }
+
+  res.json(status);
 });
 
-// Main fortune endpoint
+// Detect network from txhash
+async function detectNetwork(txhash) {
+  for (const [network, provider] of Object.entries(providers)) {
+    try {
+      const receipt = await provider.getTransactionReceipt(txhash);
+      if (receipt) return network;
+    } catch (e) {
+      continue;
+    }
+  }
+  return null;
+}
+
+// Main fortune endpoint - uses query param: ?network=testnet
 app.post('/fortune', async (req, res) => {
   try {
     const { txhash, message } = req.body;
+    const networkParam = req.query.network; // ?network=testnet or ?network=mainnet
 
     if (!txhash || !message) {
       return res.status(400).json({ error: "Missing txhash or message" });
@@ -63,8 +115,28 @@ app.post('/fortune', async (req, res) => {
       return res.status(400).json({ error: "Invalid txhash" });
     }
 
+    // Determine network
+    let network = networkParam;
+    if (!network || !NETWORKS[network]) {
+      network = await detectNetwork(txhash);
+      if (!network) {
+        return res.status(400).json({
+          error: "Transaction not found on any supported network",
+          hint: "Use ?network=testnet or ?network=mainnet"
+        });
+      }
+    }
+
+    const config = NETWORKS[network];
+    const provider = providers[network];
+    const wallet = wallets[network];
+
+    if (!provider || !wallet) {
+      return res.status(500).json({ error: `Network ${network} not configured` });
+    }
+
     // Prevent replays
-    if (processedTxs.has(txhash.toLowerCase())) {
+    if (processedTxs[network].has(txhash.toLowerCase())) {
       return res.status(400).json({ error: "Already processed" });
     }
 
@@ -75,8 +147,12 @@ app.post('/fortune', async (req, res) => {
     }
 
     const tx = await provider.getTransaction(txhash);
-    if (tx.to?.toLowerCase() !== NETWORK.oracleAddress.toLowerCase()) {
-      return res.status(400).json({ error: "Not sent to oracle" });
+    if (tx.to?.toLowerCase() !== config.oracleAddress.toLowerCase()) {
+      return res.status(400).json({ 
+        error: "Not sent to oracle",
+        expected: config.oracleAddress,
+        received: tx.to
+      });
     }
 
     // Check minimum (0.001 MON)
@@ -85,7 +161,7 @@ app.post('/fortune', async (req, res) => {
       return res.status(400).json({ error: "Minimum 0.001 MON required" });
     }
 
-    processedTxs.add(txhash.toLowerCase());
+    processedTxs[network].add(txhash.toLowerCase());
 
     // Calculate fortune
     const luckScore = calculateLuckScore(tx.value.toString(), message);
@@ -113,12 +189,13 @@ app.post('/fortune', async (req, res) => {
       fortune: fortuneMessage,
       luck_score: luckScore,
       luck_tier: getLuckTier(luckScore),
+      network: network,
       mon_received: ethers.formatEther(tx.value),
       mon_sent: ethers.formatEther(returnAmount),
       multiplier: Number(returnAmount) / Number(tx.value),
       txhash_return: returnTxHash,
       sender: tx.from,
-      explorer_url: `${NETWORK.explorer}/tx/${txhash}`
+      explorer_url: `${config.explorer}/tx/${txhash}`
     });
 
   } catch (error) {
@@ -158,8 +235,23 @@ function getLuckTier(score) {
   return 'excellent';
 }
 
+// Cleanup old processed txs periodically
+setInterval(() => {
+  Object.keys(processedTxs).forEach(network => {
+    if (processedTxs[network].size > 10000) {
+      console.log(`Clearing old ${network} transactions`);
+      processedTxs[network].clear();
+    }
+  });
+}, 3600000);
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🔮 Fortune Oracle on port ${PORT}`);
-  console.log(`Address: ${NETWORK.oracleAddress}`);
+  console.log(`🔮 Fortune Oracle running on port ${PORT}`);
+  console.log('Networks configured:');
+  Object.entries(NETWORKS).forEach(([name, config]) => {
+    if (config.oracleAddress) {
+      console.log(`  ${name}: ${config.oracleAddress}`);
+    }
+  });
 });

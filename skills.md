@@ -89,7 +89,16 @@ console.log('TxHash:', receipt.hash);
 ### Step 3: Call Fortune API
 
 ```bash
-curl -X POST http://localhost:3000/fortune \
+# Testnet
+curl -X POST "http://localhost:3000/fortune?network=testnet" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "txhash": "0xYOUR_TX_HASH",
+    "message": "Should I deploy my contract today?"
+  }'
+
+# Mainnet
+curl -X POST "http://localhost:3000/fortune?network=mainnet" \
   -H "Content-Type: application/json" \
   -d '{
     "txhash": "0xYOUR_TX_HASH",
@@ -99,7 +108,18 @@ curl -X POST http://localhost:3000/fortune \
 
 **Or using JavaScript:**
 ```javascript
-const response = await fetch('http://localhost:3000/fortune', {
+// Testnet
+const response = await fetch('http://localhost:3000/fortune?network=testnet', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    txhash: '0xYOUR_TX_HASH',
+    message: 'Should I deploy my contract today?'
+  })
+});
+
+// Mainnet
+const response = await fetch('http://localhost:3000/fortune?network=mainnet', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
@@ -111,17 +131,25 @@ const response = await fetch('http://localhost:3000/fortune', {
 const fortune = await response.json();
 console.log(fortune.fortune);  // "The Monad smiles upon you!"
 console.log(fortune.luck_score);  // 87
+console.log(fortune.network);  // "testnet" or "mainnet"
 ```
 
 ---
 
 ## 📡 API Reference
 
-### POST `/fortune`
+### POST `/fortune?network={testnet|mainnet}`
 
 Get a fortune for your MON transaction.
 
-**Request:**
+**Query Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| `network` | No* | `testnet` or `mainnet` (auto-detected if omitted) |
+
+\* If network is not specified, the API will auto-detect based on the txhash.
+
+**Request Body:**
 ```json
 {
   "txhash": "0xabc...",      // Required: Transaction hash from sending MON
@@ -136,6 +164,7 @@ Get a fortune for your MON transaction.
   "fortune": "The Monad smiles upon you!",
   "luck_score": 87,
   "luck_tier": "excellent",
+  "network": "testnet",
   "mon_received": "0.01",
   "mon_sent": "0.02",
   "multiplier": 2.0,
@@ -188,7 +217,8 @@ const CONFIG = {
   oracleAddress: '0x3b77d476a15C77A776e542ac4C0f6484DAa6Aa3f',
   rpcUrl: 'https://testnet-rpc.monad.xyz',
   apiUrl: 'http://localhost:3000',
-  privateKey: process.env.AGENT_PRIVATE_KEY
+  privateKey: process.env.AGENT_PRIVATE_KEY,
+  network: 'testnet'  // or 'mainnet'
 };
 
 async function getDailyFortune() {
@@ -206,8 +236,8 @@ async function getDailyFortune() {
   const receipt = await tx.wait();
   console.log('💸 Sent 0.01 MON, tx:', receipt.hash);
   
-  // 2. Call fortune API
-  const response = await fetch(`${CONFIG.apiUrl}/fortune`, {
+  // 2. Call fortune API with network query param
+  const response = await fetch(`${CONFIG.apiUrl}/fortune?network=${CONFIG.network}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -222,6 +252,7 @@ async function getDailyFortune() {
   console.log('🎲 Luck Score:', result.luck_score, '/ 100');
   console.log('✨ Fortune:', result.fortune);
   console.log('💰 Returned:', result.mon_sent, 'MON');
+  console.log('🌐 Network:', result.network);
   
   // 4. Decision making
   if (result.luck_score >= 60) {
@@ -239,8 +270,11 @@ getDailyFortune().catch(console.error);
 
 **Cron setup:**
 ```bash
-# Run every day at 9 AM
-0 9 * * * cd /path/to/agent && node fortune-daily.js >> fortune.log 2>&1
+# Run every day at 9 AM on testnet
+0 9 * * * cd /path/to/agent && NETWORK=testnet node fortune-daily.js >> fortune.log 2>&1
+
+# Run every day at 9 AM on mainnet
+0 9 * * * cd /path/to/agent && NETWORK=mainnet node fortune-daily.js >> fortune.log 2>&1
 ```
 
 ---
@@ -248,19 +282,26 @@ getDailyFortune().catch(console.error);
 ### Decision Helper Function
 
 ```javascript
-async function shouldProceedToday(privateKey, question) {
-  const provider = new ethers.JsonRpcProvider('https://testnet-rpc.monad.xyz');
+async function shouldProceedToday(privateKey, question, network = 'testnet') {
+  const rpcUrl = network === 'testnet' 
+    ? 'https://testnet-rpc.monad.xyz' 
+    : 'https://rpc.monad.xyz';
+  const oracleAddress = network === 'testnet'
+    ? '0x3b77d476a15C77A776e542ac4C0f6484DAa6Aa3f'
+    : process.env.MAINNET_ORACLE_ADDRESS;
+    
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
   const wallet = new ethers.Wallet(privateKey, provider);
   
   // Send MON
   const tx = await wallet.sendTransaction({
-    to: '0x3b77d476a15C77A776e542ac4C0f6484DAa6Aa3f',
+    to: oracleAddress,
     value: ethers.parseEther('0.005')  // Small amount for quick decisions
   });
   await tx.wait();
   
-  // Get fortune
-  const response = await fetch('http://localhost:3000/fortune', {
+  // Get fortune with network query param
+  const response = await fetch(`http://localhost:3000/fortune?network=${network}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ txhash: tx.hash, message: question })
@@ -272,14 +313,23 @@ async function shouldProceedToday(privateKey, question) {
     shouldProceed: result.luck_score >= 60,
     confidence: result.luck_score,
     fortune: result.fortune,
+    network: result.network,
     details: result
   };
 }
 
-// Usage
+// Usage - Testnet
 const decision = await shouldProceedToday(
   process.env.PRIVATE_KEY,
-  'Should I execute the large trade today?'
+  'Should I execute the large trade today?',
+  'testnet'
+);
+
+// Usage - Mainnet
+const decision = await shouldProceedToday(
+  process.env.PRIVATE_KEY,
+  'Should I execute the large trade today?',
+  'mainnet'
 );
 
 if (decision.shouldProceed) {
@@ -336,9 +386,9 @@ class MonFortuneClient:
         
         print(f"💸 Sent {amount} MON, tx: {receipt.transactionHash.hex()}")
         
-        # 2. Call fortune API
+        # 2. Call fortune API with network query param
         response = requests.post(
-            f"{self.api_url}/fortune",
+            f"{self.api_url}/fortune?network={self.network}",
             json={
                 "txhash": receipt.transactionHash.hex(),
                 "message": question
